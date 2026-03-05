@@ -43,7 +43,6 @@ def tree_view(request):
 def tree_data(request):
     people = Person.objects.select_related('father', 'mother').all()
     nodes = []
-    links = []
 
     for person in people:
         nodes.append(
@@ -54,11 +53,9 @@ def tree_data(request):
                 'birth_date': person.birth_date.strftime('%Y-%m-%d'),
                 'death_date': person.death_date.strftime('%Y-%m-%d') if person.death_date else None,
                 'photo': person.photo.url if person.photo else None,
+                'father_id': person.father_id,
+                'mother_id': person.mother_id,
             }
         )
-        if person.father_id:
-            links.append({'source': person.father_id, 'target': person.id, 'relation': 'father'})
-        if person.mother_id:
-            links.append({'source': person.mother_id, 'target': person.id, 'relation': 'mother'})
 
-    return JsonResponse({'nodes': nodes, 'links': links})
+    return JsonResponse({'nodes': nodes})

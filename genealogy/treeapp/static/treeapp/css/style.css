@@ -5,16 +5,33 @@
   border-radius: 50%;
 }
 
+.tree-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
 #tree-container {
   border: 1px solid #ddd;
   border-radius: 12px;
   overflow: hidden;
+  background: #fafafa;
 }
 
-.node-card {
-  fill: #f8fafc;
-  stroke: #cbd5e1;
-  stroke-width: 1;
+.link-line {
+  fill: none;
+  stroke: #9ca3af;
+  stroke-width: 2;
+}
+
+.couple-line {
+  stroke: #6b7280;
+  stroke-width: 2;
+}
+
+.person-photo-frame {
+  fill: #fff;
+  stroke-width: 4;
 }
 
 .node-alive {
@@ -23,4 +40,15 @@
 
 .node-deceased {
   stroke: #9b2c2c;
+}
+
+.person-name {
+  font-size: 17px;
+  font-weight: 600;
+  fill: #1f2937;
+}
+
+.person-dates {
+  font-size: 13px;
+  fill: #0ea5e9;
 }
