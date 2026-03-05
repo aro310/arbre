@@ -10,33 +10,35 @@ const PLACEHOLDER_PHOTO =
   'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="100%" height="100%" fill="%23e5e7eb"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="16" fill="%236b7280">Photo</text></svg>';
 
 function formatDates(person) {
-  return person.death_date
-    ? `${person.birth_date} - ${person.death_date}`
-    : `${person.birth_date} - Présent`;
+  return person.death_date ? `${person.birth_date} - ${person.death_date}` : `${person.birth_date} - Présent`;
+}
+
+function coupleKey(a, b) {
+  const [minId, maxId] = [a, b].sort((x, y) => x - y);
+  return `c-${minId}-${maxId}`;
 }
 
 function buildFamilies(nodes) {
   const families = new Map();
 
   for (const person of nodes) {
-    if (!person.father_id && !person.mother_id) {
-      continue;
-    }
+    if (!person.father_id && !person.mother_id) continue;
 
-    const key = person.father_id && person.mother_id
-      ? `c-${person.father_id}-${person.mother_id}`
-      : `s-${person.father_id || person.mother_id}`;
+    const parentIds = [person.father_id, person.mother_id].filter(Boolean);
+    const key = parentIds.length === 2 ? coupleKey(parentIds[0], parentIds[1]) : `s-${parentIds[0]}`;
 
     if (!families.has(key)) {
-      families.set(key, {
-        key,
-        father_id: person.father_id,
-        mother_id: person.mother_id,
-        children: [],
-      });
+      families.set(key, { key, parent_ids: parentIds, children: [] });
     }
-
     families.get(key).children.push(person.id);
+  }
+
+  for (const person of nodes) {
+    if (!person.spouse_id) continue;
+    const key = coupleKey(person.id, person.spouse_id);
+    if (!families.has(key)) {
+      families.set(key, { key, parent_ids: [person.id, person.spouse_id], children: [] });
+    }
   }
 
   return Array.from(families.values());
@@ -46,26 +48,16 @@ function computeGenerations(nodesById) {
   const memo = new Map();
 
   function depth(personId, stack = new Set()) {
-    if (memo.has(personId)) {
-      return memo.get(personId);
-    }
-    if (stack.has(personId)) {
-      return 0;
-    }
+    if (memo.has(personId)) return memo.get(personId);
+    if (stack.has(personId)) return 0;
 
     const person = nodesById.get(personId);
-    if (!person) {
-      return 0;
-    }
+    if (!person) return 0;
 
     stack.add(personId);
     const parentDepths = [];
-    if (person.father_id) {
-      parentDepths.push(depth(person.father_id, stack) + 1);
-    }
-    if (person.mother_id) {
-      parentDepths.push(depth(person.mother_id, stack) + 1);
-    }
+    if (person.father_id) parentDepths.push(depth(person.father_id, stack) + 1);
+    if (person.mother_id) parentDepths.push(depth(person.mother_id, stack) + 1);
     stack.delete(personId);
 
     const value = parentDepths.length ? Math.max(...parentDepths) : 0;
@@ -73,8 +65,25 @@ function computeGenerations(nodesById) {
     return value;
   }
 
-  for (const id of nodesById.keys()) {
-    depth(id);
+  for (const id of nodesById.keys()) depth(id);
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const person of nodesById.values()) {
+      if (!person.spouse_id || !nodesById.has(person.spouse_id)) continue;
+      const a = memo.get(person.id) || 0;
+      const b = memo.get(person.spouse_id) || 0;
+      const level = Math.max(a, b);
+      if (a !== level) {
+        memo.set(person.id, level);
+        changed = true;
+      }
+      if (b !== level) {
+        memo.set(person.spouse_id, level);
+        changed = true;
+      }
+    }
   }
 
   return memo;
@@ -84,56 +93,48 @@ function assignPositions(nodes, families) {
   const nodesById = new Map(nodes.map((p) => [p.id, p]));
   const generations = computeGenerations(nodesById);
 
-  const familiesByMember = new Map();
+  const partnerMap = new Map();
   families.forEach((family) => {
-    [family.father_id, family.mother_id].forEach((parentId) => {
-      if (!parentId) return;
-      if (!familiesByMember.has(parentId)) {
-        familiesByMember.set(parentId, []);
-      }
-      familiesByMember.get(parentId).push(family);
-    });
+    if (family.parent_ids.length !== 2) return;
+    const [a, b] = family.parent_ids;
+    if (!partnerMap.has(a)) partnerMap.set(a, new Set());
+    if (!partnerMap.has(b)) partnerMap.set(b, new Set());
+    partnerMap.get(a).add(b);
+    partnerMap.get(b).add(a);
   });
 
   const levelMap = new Map();
   nodes.forEach((person) => {
     const level = generations.get(person.id) || 0;
-    if (!levelMap.has(level)) {
-      levelMap.set(level, []);
-    }
+    if (!levelMap.has(level)) levelMap.set(level, []);
     levelMap.get(level).push(person);
   });
 
   const sortedLevels = Array.from(levelMap.keys()).sort((a, b) => a - b);
-  const placedFamilyKeys = new Set();
   const positions = new Map();
   let maxWidth = 1000;
 
   sortedLevels.forEach((level) => {
     const persons = levelMap.get(level).sort((a, b) => a.birth_date.localeCompare(b.birth_date));
+    const placed = new Set();
     const units = [];
 
     for (const person of persons) {
-      if (positions.has(person.id)) {
-        continue;
+      if (placed.has(person.id)) continue;
+
+      const partners = Array.from(partnerMap.get(person.id) || []);
+      const partner = partners
+        .map((id) => nodesById.get(id))
+        .find((candidate) => candidate && !placed.has(candidate.id) && (generations.get(candidate.id) || 0) === level);
+
+      if (partner) {
+        units.push({ type: 'couple', left: person, right: partner });
+        placed.add(person.id);
+        placed.add(partner.id);
+      } else {
+        units.push({ type: 'single', person });
+        placed.add(person.id);
       }
-
-      const memberFamilies = (familiesByMember.get(person.id) || []).filter(
-        (fam) => fam.father_id && fam.mother_id && !placedFamilyKeys.has(fam.key)
-      );
-
-      const family = memberFamilies[0];
-      if (family) {
-        const partnerId = family.father_id === person.id ? family.mother_id : family.father_id;
-        const partner = nodesById.get(partnerId);
-        if (partner && (generations.get(partner.id) || 0) === level && !positions.has(partner.id)) {
-          units.push({ type: 'couple', left: person, right: partner, family });
-          placedFamilyKeys.add(family.key);
-          continue;
-        }
-      }
-
-      units.push({ type: 'single', person });
     }
 
     let cursorX = SIDE_MARGIN;
@@ -144,7 +145,6 @@ function assignPositions(nodes, families) {
         const centerX = cursorX + COUPLE_WIDTH / 2;
         positions.set(unit.left.id, { x: centerX - 80, y });
         positions.set(unit.right.id, { x: centerX + 80, y });
-        unit.centerX = centerX;
         cursorX += COUPLE_WIDTH;
       } else {
         const centerX = cursorX + SINGLE_WIDTH / 2;
@@ -158,25 +158,45 @@ function assignPositions(nodes, families) {
 
   const maxLevel = sortedLevels.length ? Math.max(...sortedLevels) : 0;
   const height = TOP_MARGIN + (maxLevel + 1) * GENERATION_HEIGHT + 120;
-
   return { positions, width: maxWidth, height };
+}
+
+function drawCoupleLinks(layer, families, positions) {
+  families.forEach((family) => {
+    if (family.parent_ids.length !== 2) return;
+    const [aId, bId] = family.parent_ids;
+    const a = positions.get(aId);
+    const b = positions.get(bId);
+    if (!a || !b) return;
+
+    layer
+      .append('line')
+      .attr('class', 'couple-line')
+      .attr('x1', Math.min(a.x, b.x) + NODE_RADIUS + 8)
+      .attr('y1', a.y)
+      .attr('x2', Math.max(a.x, b.x) - NODE_RADIUS - 8)
+      .attr('y2', b.y);
+
+    layer
+      .append('text')
+      .attr('x', (a.x + b.x) / 2)
+      .attr('y', (a.y + b.y) / 2 + 6)
+      .attr('text-anchor', 'middle')
+      .attr('font-size', 16)
+      .attr('fill', '#3b82f6')
+      .text('♥');
+  });
 }
 
 function drawFamilyConnectors(layer, families, positions) {
   families.forEach((family) => {
-    const parentPoints = [family.father_id, family.mother_id]
-      .filter(Boolean)
-      .map((id) => positions.get(id))
-      .filter(Boolean);
+    if (!family.children.length) return;
 
-    if (!parentPoints.length) {
-      return;
-    }
+    const parentPoints = family.parent_ids.map((id) => positions.get(id)).filter(Boolean);
+    if (!parentPoints.length) return;
 
     const childrenPoints = family.children.map((id) => positions.get(id)).filter(Boolean);
-    if (!childrenPoints.length) {
-      return;
-    }
+    if (!childrenPoints.length) return;
 
     const parentAnchor = parentPoints.length === 2
       ? {
@@ -185,16 +205,15 @@ function drawFamilyConnectors(layer, families, positions) {
         }
       : { x: parentPoints[0].x, y: parentPoints[0].y };
 
-    const junctionY = Math.min(...childrenPoints.map((point) => point.y)) - CONNECTOR_GAP;
-    const minX = Math.min(...childrenPoints.map((point) => point.x));
-    const maxX = Math.max(...childrenPoints.map((point) => point.x));
-
+    const junctionY = Math.min(...childrenPoints.map((p) => p.y)) - CONNECTOR_GAP;
+    const minX = Math.min(...childrenPoints.map((p) => p.x));
+    const maxX = Math.max(...childrenPoints.map((p) => p.x));
     const parentBottomY = parentAnchor.y + NODE_RADIUS + 8;
 
     layer
       .append('path')
       .attr('class', 'link-line')
-      .attr('d', `M ${parentAnchor.x} ${parentBottomY} V ${junctionY} H ${(minX + maxX) / 2}`);
+      .attr('d', `M ${parentAnchor.x} ${parentBottomY} V ${junctionY}`);
 
     if (minX !== maxX) {
       layer
@@ -218,34 +237,7 @@ function drawFamilyConnectors(layer, families, positions) {
   });
 }
 
-function drawCoupleLinks(layer, families, positions) {
-  families.forEach((family) => {
-    if (!family.father_id || !family.mother_id) return;
-    const father = positions.get(family.father_id);
-    const mother = positions.get(family.mother_id);
-    if (!father || !mother) return;
-
-    const y = father.y;
-    layer
-      .append('line')
-      .attr('class', 'couple-line')
-      .attr('x1', father.x + NODE_RADIUS + 8)
-      .attr('y1', y)
-      .attr('x2', mother.x - NODE_RADIUS - 8)
-      .attr('y2', y);
-
-    layer
-      .append('text')
-      .attr('x', (father.x + mother.x) / 2)
-      .attr('y', y + 6)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 16)
-      .attr('fill', '#3b82f6')
-      .text('♥');
-  });
-}
-
-function drawPeople(layer, nodes, positions) {
+function drawPeople(layer, nodes, positions, onDrag) {
   const nodeGroups = layer
     .selectAll('g.person-node')
     .data(nodes)
@@ -255,7 +247,16 @@ function drawPeople(layer, nodes, positions) {
     .attr('transform', (d) => {
       const point = positions.get(d.id);
       return `translate(${point.x}, ${point.y})`;
-    });
+    })
+    .call(
+      d3.drag().on('drag', function onDragged(event, d) {
+        const point = positions.get(d.id);
+        point.x = event.x;
+        point.y = event.y;
+        d3.select(this).attr('transform', `translate(${point.x}, ${point.y})`);
+        onDrag();
+      })
+    );
 
   nodeGroups
     .append('circle')
@@ -357,22 +358,26 @@ async function renderTree() {
 
   const families = buildFamilies(data.nodes);
   const { positions, width, height } = assignPositions(data.nodes, families);
-
   svg.attr('viewBox', `0 0 ${width} ${height}`).attr('height', height);
 
   const rootGroup = svg.append('g');
+  const linksLayer = rootGroup.append('g');
+  const nodesLayer = rootGroup.append('g');
+
+  const redrawLinks = () => {
+    linksLayer.selectAll('*').remove();
+    drawCoupleLinks(linksLayer, families, positions);
+    drawFamilyConnectors(linksLayer, families, positions);
+  };
+
+  redrawLinks();
+  drawPeople(nodesLayer, data.nodes, positions, redrawLinks);
+
   svg.call(
     d3.zoom().scaleExtent([0.2, 3]).on('zoom', ({ transform }) => {
       rootGroup.attr('transform', transform);
     })
   );
-
-  const linksLayer = rootGroup.append('g');
-  drawCoupleLinks(linksLayer, families, positions);
-  drawFamilyConnectors(linksLayer, families, positions);
-
-  const nodesLayer = rootGroup.append('g');
-  drawPeople(nodesLayer, data.nodes, positions);
 }
 
 document.getElementById('export-image').addEventListener('click', () => {

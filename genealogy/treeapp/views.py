@@ -7,7 +7,7 @@ from .models import Person
 
 
 def person_list(request):
-    people = Person.objects.select_related('father', 'mother').all()
+    people = Person.objects.select_related('father', 'mother', 'spouse').all()
     return render(request, 'treeapp/person_list.html', {'people': people})
 
 
@@ -41,7 +41,7 @@ def tree_view(request):
 
 
 def tree_data(request):
-    people = Person.objects.select_related('father', 'mother').all()
+    people = Person.objects.select_related('father', 'mother', 'spouse').all()
     nodes = []
 
     for person in people:
@@ -55,6 +55,7 @@ def tree_data(request):
                 'photo': person.photo.url if person.photo else None,
                 'father_id': person.father_id,
                 'mother_id': person.mother_id,
+                'spouse_id': person.spouse_id,
             }
         )
 

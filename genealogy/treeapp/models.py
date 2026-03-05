@@ -17,6 +17,9 @@ class Person(models.Model):
     mother = models.ForeignKey(
         'self', related_name='mother_children', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='Mère'
     )
+    spouse = models.ForeignKey(
+        'self', related_name='spouse_of', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='Conjoint(e)'
+    )
 
     class Meta:
         ordering = ['first_name', 'birth_date']

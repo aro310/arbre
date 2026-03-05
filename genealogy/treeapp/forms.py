@@ -18,7 +18,7 @@ class PersonForm(forms.ModelForm):
 
     class Meta:
         model = Person
-        fields = ['first_name', 'birth_date', 'death_date', 'status', 'photo', 'father', 'mother']
+        fields = ['first_name', 'birth_date', 'death_date', 'status', 'photo', 'father', 'mother', 'spouse']
         widgets = {
             'birth_date': forms.DateInput(attrs={'type': 'date'}),
             'death_date': forms.DateInput(attrs={'type': 'date'}),
@@ -32,25 +32,36 @@ class PersonForm(forms.ModelForm):
             self.fields['children'].initial = list(self.instance.children.values_list('pk', flat=True))
         self.fields['father'].queryset = qs
         self.fields['mother'].queryset = qs
+        self.fields['spouse'].queryset = qs
         self.fields['children'].queryset = qs
 
     def clean(self):
         cleaned_data = super().clean()
         status = cleaned_data.get('status')
         death_date = cleaned_data.get('death_date')
+        spouse = cleaned_data.get('spouse')
+
         if status == Person.Status.DECEASED and not death_date:
             self.add_error('death_date', 'La date de décès est obligatoire si le statut est décédé.')
         if status == Person.Status.ALIVE and death_date:
             self.add_error('death_date', 'Supprimez la date de décès pour une personne vivante.')
+        if self.instance and self.instance.pk and spouse and spouse.pk == self.instance.pk:
+            self.add_error('spouse', 'Une personne ne peut pas être son propre conjoint.')
+
         return cleaned_data
 
     def save(self, commit=True):
+        previous_spouse_id = None
+        if self.instance and self.instance.pk:
+            previous_spouse_id = Person.objects.filter(pk=self.instance.pk).values_list('spouse_id', flat=True).first()
+
         person = super().save(commit=commit)
         if not commit:
             return person
 
         selected_children = self.cleaned_data.get('children')
         role = self.cleaned_data.get('parent_role')
+        spouse = self.cleaned_data.get('spouse')
 
         for child in person.children:
             if role == 'father' and child.father_id == person.id:
@@ -68,5 +79,33 @@ class PersonForm(forms.ModelForm):
                 elif role == 'mother':
                     child.mother = person
                     child.save(update_fields=['mother'])
+
+        if previous_spouse_id and (not spouse or previous_spouse_id != spouse.pk):
+            previous_spouse = Person.objects.filter(pk=previous_spouse_id).first()
+            if previous_spouse and previous_spouse.spouse_id == person.id:
+                previous_spouse.spouse = None
+                previous_spouse.save(update_fields=['spouse'])
+
+        if spouse:
+            if spouse.spouse_id and spouse.spouse_id != person.id:
+                former_partner = Person.objects.filter(pk=spouse.spouse_id).first()
+                if former_partner:
+                    former_partner.spouse = None
+                    former_partner.save(update_fields=['spouse'])
+
+            if person.spouse_id != spouse.id:
+                person.spouse = spouse
+                person.save(update_fields=['spouse'])
+
+            if spouse.spouse_id != person.id:
+                spouse.spouse = person
+                spouse.save(update_fields=['spouse'])
+        elif person.spouse_id:
+            old_spouse = Person.objects.filter(pk=person.spouse_id).first()
+            if old_spouse and old_spouse.spouse_id == person.id:
+                old_spouse.spouse = None
+                old_spouse.save(update_fields=['spouse'])
+            person.spouse = None
+            person.save(update_fields=['spouse'])
 
         return person

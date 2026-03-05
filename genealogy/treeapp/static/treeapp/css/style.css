@@ -52,3 +52,11 @@
   font-size: 13px;
   fill: #0ea5e9;
 }
+
+.person-node {
+  cursor: grab;
+}
+
+.person-node:active {
+  cursor: grabbing;
+}
