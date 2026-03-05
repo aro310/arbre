@@ -18,6 +18,15 @@ function coupleKey(a, b) {
   return `c-${minId}-${maxId}`;
 }
 
+function splitNameLines(name, maxWordsPerLine = 2) {
+  const parts = (name || '').trim().split(/\s+/).filter(Boolean);
+  const lines = [];
+  for (let i = 0; i < parts.length; i += maxWordsPerLine) {
+    lines.push(parts.slice(i, i + maxWordsPerLine).join(' '));
+  }
+  return lines.length ? lines : [''];
+}
+
 function buildFamilies(nodes) {
   const families = new Map();
 
@@ -156,6 +165,17 @@ function assignPositions(nodes, families) {
     maxWidth = Math.max(maxWidth, cursorX + SIDE_MARGIN);
   });
 
+  families.forEach((family) => {
+    if (family.parent_ids.length !== 2 || family.children.length !== 1) return;
+    const [aId, bId] = family.parent_ids;
+    const childId = family.children[0];
+    const a = positions.get(aId);
+    const b = positions.get(bId);
+    const child = positions.get(childId);
+    if (!a || !b || !child) return;
+    child.x = (a.x + b.x) / 2;
+  });
+
   const maxLevel = sortedLevels.length ? Math.max(...sortedLevels) : 0;
   const height = TOP_MARGIN + (maxLevel + 1) * GENERATION_HEIGHT + 120;
   return { positions, width: maxWidth, height };
@@ -171,11 +191,12 @@ function drawCoupleLinks(layer, families, positions) {
 
     layer
       .append('line')
-      .attr('class', 'couple-line')
       .attr('x1', Math.min(a.x, b.x) + NODE_RADIUS + 8)
       .attr('y1', a.y)
       .attr('x2', Math.max(a.x, b.x) - NODE_RADIUS - 8)
-      .attr('y2', b.y);
+      .attr('y2', b.y)
+      .attr('stroke', '#6b7280')
+      .attr('stroke-width', 2);
 
     layer
       .append('text')
@@ -212,27 +233,31 @@ function drawFamilyConnectors(layer, families, positions) {
 
     layer
       .append('path')
-      .attr('class', 'link-line')
-      .attr('d', `M ${parentAnchor.x} ${parentBottomY} V ${junctionY}`);
+      .attr('d', `M ${parentAnchor.x} ${parentBottomY} V ${junctionY}`)
+      .attr('fill', 'none')
+      .attr('stroke', '#9ca3af')
+      .attr('stroke-width', 2);
 
     if (minX !== maxX) {
       layer
         .append('line')
-        .attr('class', 'link-line')
         .attr('x1', minX)
         .attr('y1', junctionY)
         .attr('x2', maxX)
-        .attr('y2', junctionY);
+        .attr('y2', junctionY)
+        .attr('stroke', '#9ca3af')
+        .attr('stroke-width', 2);
     }
 
     childrenPoints.forEach((point) => {
       layer
         .append('line')
-        .attr('class', 'link-line')
         .attr('x1', point.x)
         .attr('y1', junctionY)
         .attr('x2', point.x)
-        .attr('y2', point.y - NODE_RADIUS - 6);
+        .attr('y2', point.y - NODE_RADIUS - 6)
+        .attr('stroke', '#9ca3af')
+        .attr('stroke-width', 2);
     });
   });
 }
@@ -261,7 +286,9 @@ function drawPeople(layer, nodes, positions, onDrag) {
   nodeGroups
     .append('circle')
     .attr('r', NODE_RADIUS)
-    .attr('class', (d) => `person-photo-frame ${d.status === 'alive' ? 'node-alive' : 'node-deceased'}`);
+    .attr('fill', '#fff')
+    .attr('stroke-width', 4)
+    .attr('stroke', (d) => (d.status === 'alive' ? '#2f855a' : '#9b2c2c'));
 
   nodeGroups
     .append('clipPath')
@@ -279,18 +306,34 @@ function drawPeople(layer, nodes, positions, onDrag) {
     .attr('clip-path', (d) => `url(#photo-clip-${d.id})`)
     .attr('preserveAspectRatio', 'xMidYMid slice');
 
-  nodeGroups
+  const nameText = nodeGroups
     .append('text')
     .attr('class', 'person-name')
-    .attr('y', NODE_RADIUS + 24)
     .attr('text-anchor', 'middle')
-    .text((d) => d.name);
+    .attr('fill', '#1f2937')
+    .attr('font-size', 17)
+    .attr('font-weight', 600)
+    .attr('y', NODE_RADIUS + 22);
+
+  nameText.each(function drawWrappedName(d) {
+    const text = d3.select(this);
+    const lines = splitNameLines(d.name);
+    lines.forEach((line, index) => {
+      text
+        .append('tspan')
+        .attr('x', 0)
+        .attr('dy', index === 0 ? 0 : 18)
+        .text(line);
+    });
+  });
 
   nodeGroups
     .append('text')
     .attr('class', 'person-dates')
-    .attr('y', NODE_RADIUS + 44)
     .attr('text-anchor', 'middle')
+    .attr('fill', '#0ea5e9')
+    .attr('font-size', 13)
+    .attr('y', (d) => NODE_RADIUS + 22 + splitNameLines(d.name).length * 18 + 8)
     .text((d) => formatDates(d));
 }
 
@@ -309,6 +352,7 @@ function renderSvgToCanvas(svgElement) {
     const url = URL.createObjectURL(svgBlob);
 
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = () => {
       const canvas = document.createElement('canvas');
       canvas.width = svgElement.viewBox.baseVal.width;

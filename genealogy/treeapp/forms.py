@@ -18,7 +18,7 @@ class PersonForm(forms.ModelForm):
 
     class Meta:
         model = Person
-        fields = ['first_name', 'birth_date', 'death_date', 'status', 'photo', 'father', 'mother', 'spouse']
+        fields = ['first_name', 'birth_date', 'death_date', 'status', 'photo', 'image_url', 'father', 'mother', 'spouse']
         widgets = {
             'birth_date': forms.DateInput(attrs={'type': 'date'}),
             'death_date': forms.DateInput(attrs={'type': 'date'}),

@@ -52,7 +52,7 @@ def tree_data(request):
                 'status': person.status,
                 'birth_date': person.birth_date.strftime('%Y-%m-%d'),
                 'death_date': person.death_date.strftime('%Y-%m-%d') if person.death_date else None,
-                'photo': person.photo.url if person.photo else None,
+                'photo': person.photo.url if person.photo else person.image_url,
                 'father_id': person.father_id,
                 'mother_id': person.mother_id,
                 'spouse_id': person.spouse_id,

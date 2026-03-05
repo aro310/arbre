@@ -11,6 +11,7 @@ class Person(models.Model):
     death_date = models.DateField('Date de décès', null=True, blank=True)
     status = models.CharField('Statut', max_length=10, choices=Status.choices, default=Status.ALIVE)
     photo = models.ImageField('Photo', upload_to='photos/', null=True, blank=True)
+    image_url = models.URLField('Lien image', null=True, blank=True)
     father = models.ForeignKey(
         'self', related_name='father_children', null=True, blank=True, on_delete=models.SET_NULL, verbose_name='Père'
     )
