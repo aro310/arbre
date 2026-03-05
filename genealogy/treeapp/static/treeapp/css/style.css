@@ -1,0 +1,26 @@
+.thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+#tree-container {
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.node-card {
+  fill: #f8fafc;
+  stroke: #cbd5e1;
+  stroke-width: 1;
+}
+
+.node-alive {
+  stroke: #2f855a;
+}
+
+.node-deceased {
+  stroke: #9b2c2c;
+}

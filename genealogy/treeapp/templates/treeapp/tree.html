@@ -1,0 +1,11 @@
+{% extends 'treeapp/base.html' %}
+
+{% block content %}
+<h1>Arbre visuel interactif</h1>
+<p>Zoom : molette | Déplacement : glisser-déposer.</p>
+<div id="tree-container">
+  <svg id="tree-svg" width="100%" height="700"></svg>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="/static/treeapp/js/tree.js"></script>
+{% endblock %}
