@@ -1,0 +1,44 @@
+{% extends 'treeapp/base.html' %}
+
+{% block content %}
+<h1>Personnes</h1>
+<p>Ce mini site peut gérer facilement entre 100 et 200 personnes avec SQLite.</p>
+<table>
+  <thead>
+    <tr>
+      <th>Photo</th>
+      <th>Prénom</th>
+      <th>Naissance</th>
+      <th>Décès</th>
+      <th>Statut</th>
+      <th>Conjoint(e)</th>
+      <th>Père</th>
+      <th>Mère</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for person in people %}
+    <tr>
+      <td>
+        {% if person.photo %}
+          <img src="{{ person.photo.url }}" alt="Photo" class="thumb">
+        {% else %}
+          -
+        {% endif %}
+      </td>
+      <td>{{ person.first_name }}</td>
+      <td>{{ person.birth_date }}</td>
+      <td>{{ person.death_date|default:'-' }}</td>
+      <td>{{ person.get_status_display }}</td>
+      <td>{{ person.spouse|default:'-' }}</td>
+      <td>{{ person.father|default:'-' }}</td>
+      <td>{{ person.mother|default:'-' }}</td>
+      <td><a href="{% url 'person_update' person.pk %}">Modifier</a></td>
+    </tr>
+  {% empty %}
+    <tr><td colspan="9">Aucune personne enregistrée.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
