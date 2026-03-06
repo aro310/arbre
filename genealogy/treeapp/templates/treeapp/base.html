@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arbre généalogique</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="/static/treeapp/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <nav>
+      <ul>
+        <li><strong>Arbre généalogique</strong></li>
+      </ul>
+      <ul>
+        <li><a href="{% url 'person_list' %}">Personnes</a></li>
+        <li><a href="{% url 'person_create' %}">Ajouter</a></li>
+        <li><a href="{% url 'tree_view' %}">Vue arbre</a></li>
+      </ul>
+    </nav>
+
+    {% if messages %}
+      {% for message in messages %}
+        <article class="message {{ message.tags }}">{{ message }}</article>
+      {% endfor %}
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
