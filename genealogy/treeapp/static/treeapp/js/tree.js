@@ -1,11 +1,11 @@
-const NODE_RADIUS = 38;
-const PHOTO_RADIUS = 33;
-const SINGLE_WIDTH = 170;
-const COUPLE_WIDTH = 330;
-const GENERATION_HEIGHT = 220;
-const TOP_MARGIN = 90;
-const SIDE_MARGIN = 120;
-const CONNECTOR_GAP = 84;
+const NODE_RADIUS = 30;
+const PHOTO_RADIUS = 25;
+const SINGLE_WIDTH = 140;
+const COUPLE_WIDTH = 280;
+const GENERATION_HEIGHT = 180;
+const TOP_MARGIN = 50;
+const SIDE_MARGIN = 60;
+const CONNECTOR_GAP = 60;
 const PLACEHOLDER_PHOTO =
   'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="100%" height="100%" fill="%23e5e7eb"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="16" fill="%236b7280">Photo</text></svg>';
 
@@ -18,7 +18,7 @@ function coupleKey(a, b) {
   return `c-${minId}-${maxId}`;
 }
 
-function splitNameLines(name, maxWordsPerLine = 2) {
+function splitNameLines(name, maxWordsPerLine = 1) {
   const parts = (name || '').trim().split(/\s+/).filter(Boolean);
   const lines = [];
   for (let i = 0; i < parts.length; i += maxWordsPerLine) {
@@ -98,6 +98,13 @@ function computeGenerations(nodesById) {
   return memo;
 }
 
+// Fonction utilitaire pour vérifier si une personne est un homme (insensible à la casse)
+function isMale(person) {
+  if (!person) return false;
+  const genderStr = (person.gender || person.sexe || '').toString().toLowerCase().trim();
+  return ['m', 'h', 'homme', 'male', 'masculin'].includes(genderStr);
+}
+
 function assignPositions(nodes, families) {
   const nodesById = new Map(nodes.map((p) => [p.id, p]));
   const generations = computeGenerations(nodesById);
@@ -121,63 +128,135 @@ function assignPositions(nodes, families) {
 
   const sortedLevels = Array.from(levelMap.keys()).sort((a, b) => a - b);
   const positions = new Map();
-  let maxWidth = 1000;
+  let maxWidth = 0;
 
   sortedLevels.forEach((level) => {
-    const persons = levelMap.get(level).sort((a, b) => a.birth_date.localeCompare(b.birth_date));
-    const placed = new Set();
+    const persons = levelMap.get(level);
     const units = [];
+    const placed = new Set();
 
-    for (const person of persons) {
-      if (placed.has(person.id)) continue;
-
+    // 1. Définir les unités (Couples ou Célibataires)
+    persons.forEach((person) => {
+      if (placed.has(person.id)) return;
       const partners = Array.from(partnerMap.get(person.id) || []);
       const partner = partners
         .map((id) => nodesById.get(id))
         .find((candidate) => candidate && !placed.has(candidate.id) && (generations.get(candidate.id) || 0) === level);
 
       if (partner) {
-        units.push({ type: 'couple', left: person, right: partner });
+        // Déterminer qui est l'homme pour le placer à gauche en utilisant notre nouvelle fonction robuste
+        const isPersonMale = isMale(person);
+        const isPartnerMale = isMale(partner);
+
+        let leftNode, rightNode;
+        if (isPersonMale && !isPartnerMale) {
+          leftNode = person;
+          rightNode = partner;
+        } else if (isPartnerMale && !isPersonMale) {
+          leftNode = partner;
+          rightNode = person;
+        } else {
+          // Fallback si les deux sont de même sexe ou inconnus : placer le premier à gauche
+          leftNode = person;
+          rightNode = partner;
+        }
+
+        units.push({ type: 'couple', left: leftNode, right: rightNode });
         placed.add(person.id);
         placed.add(partner.id);
       } else {
         units.push({ type: 'single', person });
         placed.add(person.id);
       }
-    }
+    });
 
+    // 2. Assigner un "parentGroupId" pour que les frères et sœurs restent collés
+    units.forEach((unit) => {
+      let parentsX = [];
+      let p1 = unit.type === 'couple' ? unit.left : unit.person;
+      let p2 = unit.type === 'couple' ? unit.right : null;
+
+      [p1, p2].filter(Boolean).forEach((p) => {
+        if (p.father_id && positions.has(p.father_id)) parentsX.push(positions.get(p.father_id).x);
+        if (p.mother_id && positions.has(p.mother_id)) parentsX.push(positions.get(p.mother_id).x);
+      });
+
+      if (parentsX.length > 0) {
+        unit.idealX = parentsX.reduce((a, b) => a + b, 0) / parentsX.length;
+        const parent1 = p1.father_id || p2?.father_id || 'u1';
+        const parent2 = p1.mother_id || p2?.mother_id || 'u2';
+        unit.parentGroupId = `${parent1}-${parent2}`;
+      } else {
+        unit.idealX = null;
+        unit.parentGroupId = `none-${Math.random()}`; // Les unités sans parents sont indépendantes
+      }
+    });
+
+    // 3. Créer des groupes familiaux (Fratries)
+    const groupsMap = new Map();
+    units.forEach((unit) => {
+      if (!groupsMap.has(unit.parentGroupId)) {
+        groupsMap.set(unit.parentGroupId, { units: [], idealX: unit.idealX });
+      }
+      groupsMap.get(unit.parentGroupId).units.push(unit);
+    });
+
+    // Calculer l'axe idéal moyen pour tout le groupe
+    Array.from(groupsMap.values()).forEach(group => {
+      const validX = group.units.map(u => u.idealX).filter(x => x !== null);
+      if(validX.length > 0) {
+        group.idealX = validX.reduce((a, b) => a + b, 0) / validX.length;
+      }
+    });
+
+    // 4. Trier les groupes (ceux avec parents en premier, pour s'aligner sous eux)
+    const sortedGroups = Array.from(groupsMap.values()).sort((a, b) => {
+      if (a.idealX !== null && b.idealX !== null) return a.idealX - b.idealX;
+      if (a.idealX !== null) return -1;
+      if (b.idealX !== null) return 1;
+      return 0;
+    });
+
+    // 5. Placement définitif sur l'axe X
     let cursorX = SIDE_MARGIN;
     const y = TOP_MARGIN + level * GENERATION_HEIGHT;
+    const UNIT_SPACING = 10; // Espace entre frères/sœurs
+    const FAMILY_SPACING = 50; // Espace plus large entre différentes familles
 
-    for (const unit of units) {
-      if (unit.type === 'couple') {
-        const centerX = cursorX + COUPLE_WIDTH / 2;
-        positions.set(unit.left.id, { x: centerX - 80, y });
-        positions.set(unit.right.id, { x: centerX + 80, y });
-        cursorX += COUPLE_WIDTH;
-      } else {
-        const centerX = cursorX + SINGLE_WIDTH / 2;
-        positions.set(unit.person.id, { x: centerX, y });
-        cursorX += SINGLE_WIDTH;
+    sortedGroups.forEach((group) => {
+      const totalWidth = group.units.reduce((sum, u) => sum + (u.type === 'couple' ? COUPLE_WIDTH : SINGLE_WIDTH) + UNIT_SPACING, 0) - UNIT_SPACING;
+
+      let startX = cursorX;
+      if (group.idealX !== null) {
+        const desiredStart = group.idealX - (totalWidth / 2); // Tenter de centrer tout le bloc
+        if (desiredStart > cursorX) {
+          startX = desiredStart;
+        }
       }
-    }
+
+      let currentX = startX;
+      group.units.forEach((unit) => {
+        const widthNeeded = unit.type === 'couple' ? COUPLE_WIDTH : SINGLE_WIDTH;
+        const centerX = currentX + widthNeeded / 2;
+
+        if (unit.type === 'couple') {
+          positions.set(unit.left.id, { x: centerX - 70, y });
+          positions.set(unit.right.id, { x: centerX + 70, y });
+        } else {
+          positions.set(unit.person.id, { x: centerX, y });
+        }
+
+        currentX += widthNeeded + UNIT_SPACING;
+      });
+
+      cursorX = currentX + FAMILY_SPACING; 
+    });
 
     maxWidth = Math.max(maxWidth, cursorX + SIDE_MARGIN);
   });
 
-  families.forEach((family) => {
-    if (family.parent_ids.length !== 2 || family.children.length !== 1) return;
-    const [aId, bId] = family.parent_ids;
-    const childId = family.children[0];
-    const a = positions.get(aId);
-    const b = positions.get(bId);
-    const child = positions.get(childId);
-    if (!a || !b || !child) return;
-    child.x = (a.x + b.x) / 2;
-  });
-
   const maxLevel = sortedLevels.length ? Math.max(...sortedLevels) : 0;
-  const height = TOP_MARGIN + (maxLevel + 1) * GENERATION_HEIGHT + 120;
+  const height = TOP_MARGIN + (maxLevel + 1) * GENERATION_HEIGHT + 100;
   return { positions, width: maxWidth, height };
 }
 
@@ -191,9 +270,9 @@ function drawCoupleLinks(layer, families, positions) {
 
     layer
       .append('line')
-      .attr('x1', Math.min(a.x, b.x) + NODE_RADIUS + 8)
+      .attr('x1', Math.min(a.x, b.x) + NODE_RADIUS + 6)
       .attr('y1', a.y)
-      .attr('x2', Math.max(a.x, b.x) - NODE_RADIUS - 8)
+      .attr('x2', Math.max(a.x, b.x) - NODE_RADIUS - 6)
       .attr('y2', b.y)
       .attr('stroke', '#6b7280')
       .attr('stroke-width', 2);
@@ -204,13 +283,13 @@ function drawCoupleLinks(layer, families, positions) {
       .attr('y', (a.y + b.y) / 2 + 6)
       .attr('text-anchor', 'middle')
       .attr('font-size', 16)
-      .attr('fill', '#3b82f6')
+      .attr('fill', '#ef4444')
       .text('♥');
   });
 }
 
 function drawFamilyConnectors(layer, families, positions) {
-  families.forEach((family) => {
+  families.forEach((family, index) => {
     if (!family.children.length) return;
 
     const parentPoints = family.parent_ids.map((id) => positions.get(id)).filter(Boolean);
@@ -226,10 +305,13 @@ function drawFamilyConnectors(layer, families, positions) {
         }
       : { x: parentPoints[0].x, y: parentPoints[0].y };
 
-    const junctionY = Math.min(...childrenPoints.map((p) => p.y)) - CONNECTOR_GAP;
-    const minX = Math.min(...childrenPoints.map((p) => p.x));
-    const maxX = Math.max(...childrenPoints.map((p) => p.x));
-    const parentBottomY = parentAnchor.y + NODE_RADIUS + 8;
+    const yOffset = (index % 4) * 20; 
+    const junctionY = Math.min(...childrenPoints.map((p) => p.y)) - CONNECTOR_GAP + yOffset;
+    
+    const allXCoordinates = [parentAnchor.x, ...childrenPoints.map((p) => p.x)];
+    const minX = Math.min(...allXCoordinates);
+    const maxX = Math.max(...allXCoordinates);
+    const parentBottomY = parentAnchor.y + NODE_RADIUS + 6;
 
     layer
       .append('path')
@@ -255,7 +337,7 @@ function drawFamilyConnectors(layer, families, positions) {
         .attr('x1', point.x)
         .attr('y1', junctionY)
         .attr('x2', point.x)
-        .attr('y2', point.y - NODE_RADIUS - 6)
+        .attr('y2', point.y - NODE_RADIUS - 4)
         .attr('stroke', '#9ca3af')
         .attr('stroke-width', 2);
     });
@@ -287,7 +369,7 @@ function drawPeople(layer, nodes, positions, onDrag) {
     .append('circle')
     .attr('r', NODE_RADIUS)
     .attr('fill', '#fff')
-    .attr('stroke-width', 4)
+    .attr('stroke-width', 3)
     .attr('stroke', (d) => (d.status === 'alive' ? '#2f855a' : '#9b2c2c'));
 
   nodeGroups
@@ -311,9 +393,9 @@ function drawPeople(layer, nodes, positions, onDrag) {
     .attr('class', 'person-name')
     .attr('text-anchor', 'middle')
     .attr('fill', '#1f2937')
-    .attr('font-size', 17)
+    .attr('font-size', 15)
     .attr('font-weight', 600)
-    .attr('y', NODE_RADIUS + 22);
+    .attr('y', NODE_RADIUS + 18);
 
   nameText.each(function drawWrappedName(d) {
     const text = d3.select(this);
@@ -322,7 +404,7 @@ function drawPeople(layer, nodes, positions, onDrag) {
       text
         .append('tspan')
         .attr('x', 0)
-        .attr('dy', index === 0 ? 0 : 18)
+        .attr('dy', index === 0 ? 0 : 16)
         .text(line);
     });
   });
@@ -332,8 +414,8 @@ function drawPeople(layer, nodes, positions, onDrag) {
     .attr('class', 'person-dates')
     .attr('text-anchor', 'middle')
     .attr('fill', '#0ea5e9')
-    .attr('font-size', 13)
-    .attr('y', (d) => NODE_RADIUS + 22 + splitNameLines(d.name).length * 18 + 8)
+    .attr('font-size', 12)
+    .attr('y', (d) => NODE_RADIUS + 18 + splitNameLines(d.name).length * 16 + 6)
     .text((d) => formatDates(d));
 }
 
@@ -346,25 +428,59 @@ function downloadCanvas(canvas, filename) {
 
 function renderSvgToCanvas(svgElement) {
   return new Promise((resolve, reject) => {
+
     const serializer = new XMLSerializer();
-    const source = serializer.serializeToString(svgElement);
-    const svgBlob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+    const clonedSvg = svgElement.cloneNode(true);
+
+    // ajouter namespace
+    clonedSvg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clonedSvg.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+
+    const bbox = svgElement.getBBox();
+
+    const padding = 40;
+    const width = bbox.width + padding * 2;
+    const height = bbox.height + padding * 2;
+
+    clonedSvg.setAttribute("width", width);
+    clonedSvg.setAttribute("height", height);
+    clonedSvg.setAttribute(
+      "viewBox",
+      `${bbox.x - padding} ${bbox.y - padding} ${width} ${height}`
+    );
+
+    const svgString = serializer.serializeToString(clonedSvg);
+    const svgBlob = new Blob([svgString], {
+      type: "image/svg+xml;charset=utf-8"
+    });
+
     const url = URL.createObjectURL(svgBlob);
 
     const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = svgElement.viewBox.baseVal.width;
-      canvas.height = svgElement.viewBox.baseVal.height;
-      const context = canvas.getContext('2d');
-      context.fillStyle = '#ffffff';
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(img, 0, 0);
+    img.crossOrigin = "anonymous";
+
+    img.onload = function () {
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext("2d");
+
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.drawImage(img, 0, 0);
+
       URL.revokeObjectURL(url);
+
       resolve(canvas);
     };
-    img.onerror = () => reject(new Error('Impossible de préparer l’export de l’image.'));
+
+    img.onerror = function () {
+      reject(new Error("Erreur conversion SVG"));
+    };
+
     img.src = url;
   });
 }
@@ -393,16 +509,42 @@ async function exportAsPdf() {
   pdf.save('arbre-genealogique.pdf');
 }
 
+async function toBase64(url) {
+  const res = await fetch(url);
+  const blob = await res.blob();
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
 async function renderTree() {
   const response = await fetch('/api/arbre/');
   const data = await response.json();
+
+  // 🔵 Conversion des photos en base64
+  for (const person of data.nodes) {
+    if (person.photo) {
+      try {
+        person.photo = await toBase64(person.photo);
+      } catch (e) {
+        console.warn("Image non chargée", person.photo);
+        person.photo = PLACEHOLDER_PHOTO;
+      }
+    }
+  }
 
   const svg = d3.select('#tree-svg');
   svg.selectAll('*').remove();
 
   const families = buildFamilies(data.nodes);
   const { positions, width, height } = assignPositions(data.nodes, families);
-  svg.attr('viewBox', `0 0 ${width} ${height}`).attr('height', height);
+
+  svg
+    .attr('viewBox', `0 0 ${width} ${height}`)
+    .attr('height', height);
 
   const rootGroup = svg.append('g');
   const linksLayer = rootGroup.append('g');
