@@ -367,13 +367,19 @@ function drawFamilyConnectors(layer, families, positions) {
 
     // Offset plus grand et basé sur index pour éviter tout chevauchement
     const yOffset = index * 25; // Augmenté pour plus de séparation
-    const junctionY = Math.min(...childrenPoints.map((p) => p.y)) - CONNECTOR_GAP + yOffset;
+    
+    // The junction Y should ideally stay horizontal relative to the original generation spacing, 
+    // or at least be below the parent and above the highest child (or just fixed distance below parent).
+    // Let's attach the junction to fixed distance below the parentAnchor to prevent the horizontal line 
+    // from moving wildly when dragging one child.
+    const parentBottomY = parentAnchor.y + NODE_RADIUS + 6;
+    const junctionY = parentBottomY + CONNECTOR_GAP + yOffset; 
 
     const allXCoordinates = [parentAnchor.x, ...childrenPoints.map((p) => p.x)];
     const minX = Math.min(...allXCoordinates);
     const maxX = Math.max(...allXCoordinates);
-    const parentBottomY = parentAnchor.y + NODE_RADIUS + 6;
 
+    // Vertical line from parent to the horizontal junction street
     layer
       .append('path')
       .attr('d', `M ${parentAnchor.x} ${parentBottomY} V ${junctionY}`)
@@ -381,6 +387,7 @@ function drawFamilyConnectors(layer, families, positions) {
       .attr('stroke', '#9ca3af')
       .attr('stroke-width', 2);
 
+    // Horizontal street connecting all children's vertical drop lines
     if (minX !== maxX) {
       layer
         .append('line')
@@ -392,13 +399,17 @@ function drawFamilyConnectors(layer, families, positions) {
         .attr('stroke-width', 2);
     }
 
+    // Vertical lines dropping from horizontal street to each child
     childrenPoints.forEach((point) => {
+      // If the child is dragged ABOVE the junction, the line would go up.
+      // We just draw from junctionY to the child's top boundary.
+      const childTopY = point.y - NODE_RADIUS - 4;
       layer
         .append('line')
         .attr('x1', point.x)
         .attr('y1', junctionY)
         .attr('x2', point.x)
-        .attr('y2', point.y - NODE_RADIUS - 4)
+        .attr('y2', childTopY)
         .attr('stroke', '#9ca3af')
         .attr('stroke-width', 2);
     });
@@ -556,8 +567,23 @@ async function exportAsImage() {
 async function exportAsPdf() {
   const svg = document.getElementById('tree-svg');
   if (!svg) return;
-  const width = parseFloat(svg.getAttribute('width')) || svg.viewBox.baseVal.width || 2000;
-  const height = parseFloat(svg.getAttribute('height')) || svg.viewBox.baseVal.height || 1000;
+
+  // Let's get the real bounding box of the tree to export exactly what exists
+  // We use a temporary clone or the original tree's layer bounding box
+  const gLayer = svg.querySelector('g'); // The root zoom group
+  let bbox = null;
+  try {
+     bbox = gLayer.getBBox();
+  } catch(e) {
+     bbox = { x: 0, y: 0, width: 2000, height: 1000 };
+  }
+  
+  // Padding around the tree
+  const padding = 50;
+  const width = bbox.width + padding * 2;
+  const height = bbox.height + padding * 2;
+  const offsetX = bbox.x - padding;
+  const offsetY = bbox.y - padding;
 
   const payload = {
     width, height,
@@ -572,8 +598,8 @@ async function exportAsPdf() {
      if (!transform) return;
      const match = transform.match(/translate\(([^,]+),\s*([^)]+)\)/);
      if (match) {
-        const x = parseFloat(match[1]);
-        const y = parseFloat(match[2]);
+        const x = parseFloat(match[1]) - offsetX;
+        const y = parseFloat(match[2]) - offsetY;
         const circle = g.querySelector('circle[r="30"]');
         const statusColor = circle ? circle.getAttribute('stroke') : '#2f855a';
         
@@ -590,8 +616,10 @@ async function exportAsPdf() {
   const lines = svg.querySelectorAll('line');
   lines.forEach(l => {
      payload.links.push({
-       x1: l.getAttribute('x1'), y1: l.getAttribute('y1'),
-       x2: l.getAttribute('x2'), y2: l.getAttribute('y2'),
+       x1: parseFloat(l.getAttribute('x1')) - offsetX, 
+       y1: parseFloat(l.getAttribute('y1')) - offsetY,
+       x2: parseFloat(l.getAttribute('x2')) - offsetX, 
+       y2: parseFloat(l.getAttribute('y2')) - offsetY,
        color: l.getAttribute('stroke') || '#9ca3af',
        width: l.getAttribute('stroke-width') || 2
      });
@@ -605,8 +633,10 @@ async function exportAsPdf() {
          const parts = d.split(' ');
          if (parts.length >= 4 && parts[3] === 'V') {
              payload.links.push({
-                 x1: parts[1], y1: parts[2],
-                 x2: parts[1], y2: parts[4],
+                 x1: parseFloat(parts[1]) - offsetX, 
+                 y1: parseFloat(parts[2]) - offsetY,
+                 x2: parseFloat(parts[1]) - offsetX, 
+                 y2: parseFloat(parts[4]) - offsetY,
                  color: p.getAttribute('stroke') || '#9ca3af',
                  width: p.getAttribute('stroke-width') || 2
              });
@@ -617,8 +647,8 @@ async function exportAsPdf() {
   const texts = svg.querySelectorAll('text:not(.person-name):not(.person-dates)');
   texts.forEach(t => {
       payload.texts.push({
-         x: t.getAttribute('x'),
-         y: t.getAttribute('y'),
+         x: parseFloat(t.getAttribute('x')) - offsetX,
+         y: parseFloat(t.getAttribute('y')) - offsetY,
          text: t.textContent,
          color: t.getAttribute('fill') || '#ef4444',
          size: t.getAttribute('font-size') || 16

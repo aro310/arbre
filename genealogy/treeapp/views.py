@@ -6,6 +6,7 @@ from django.contrib import messages
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_exempt
+from reportlab.lib.pagesizes import landscape, A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from .forms import PersonForm
@@ -73,31 +74,52 @@ def export_pdf(request):
     if request.method == 'POST':
         try:
             data = json.loads(request.body)
-            width = float(data.get('width', 1000))
-            height = float(data.get('height', 800))
+            orig_width = float(data.get('width', 1000))
+            orig_height = float(data.get('height', 800))
             
-            # The canvas coordinate system has (0,0) at bottom-left
+            # Use A4 Landscape page size
+            page_width, page_height = landscape(A4)
+            
             buffer = io.BytesIO()
-            p = canvas.Canvas(buffer, pagesize=(width, height))
+            p = canvas.Canvas(buffer, pagesize=(page_width, page_height))
+            
+            # Calculate scaling to fit the tree into the page, allowing some margin
+            margin_x = 20
+            margin_y = 20
+            avail_width = page_width - (margin_x * 2)
+            avail_height = page_height - (margin_y * 2)
+            
+            scale = min(avail_width / orig_width, avail_height / orig_height)
+            if scale > 1.0:
+                scale = 1.0 # Only scale down, not up
+                
+            # Center it
+            scaled_width = orig_width * scale
+            scaled_height = orig_height * scale
+            x_offset = margin_x + (avail_width - scaled_width) / 2
+            y_offset = margin_y + (avail_height - scaled_height) / 2
+            
+            p.translate(x_offset, y_offset)
+            p.scale(scale, scale)
             
             # Draw links
             for link in data.get('links', []):
                 p.setStrokeColor(link.get('color', '#9ca3af'))
                 p.setLineWidth(float(link.get('width', 2)))
-                y1 = height - float(link['y1'])
-                y2 = height - float(link['y2'])
+                y1 = orig_height - float(link['y1'])
+                y2 = orig_height - float(link['y2'])
                 p.line(float(link['x1']), y1, float(link['x2']), y2)
                 
             # Draw connector texts (like the hearts)
             for t in data.get('texts', []):
                 p.setFillColor(t.get('color', '#ef4444'))
                 p.setFont("Helvetica", float(t.get('size', 16)))
-                p.drawCentredString(float(t['x']), height - float(t['y']), str(t.get('text', '')))
+                p.drawCentredString(float(t['x']), orig_height - float(t['y']), str(t.get('text', '')))
                 
             # Draw nodes
             for node in data.get('nodes', []):
                 x = float(node['x'])
-                y = height - float(node['y']) # the point of reference is the center of the node
+                y = orig_height - float(node['y']) # the point of reference is the center of the node
                 
                 # Colors
                 status_color = node.get('statusColor', '#2f855a')
