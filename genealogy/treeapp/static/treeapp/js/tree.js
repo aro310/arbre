@@ -1,13 +1,32 @@
 const NODE_RADIUS = 30;
 const PHOTO_RADIUS = 25;
-const SINGLE_WIDTH = 140;
-const COUPLE_WIDTH = 280;
-const GENERATION_HEIGHT = 180;
-const TOP_MARGIN = 50;
-const SIDE_MARGIN = 60;
-const CONNECTOR_GAP = 60;
+const SINGLE_WIDTH = 120;
+const COUPLE_WIDTH = 260; // 2 nodes + space
+const GENERATION_HEIGHT = 220; // Plus vertical space
+const TOP_MARGIN = 80;
+const SIDE_MARGIN = 80;
+const CONNECTOR_GAP = 80;
 const PLACEHOLDER_PHOTO =
   'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="100%" height="100%" fill="%23e5e7eb"/><text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-size="16" fill="%236b7280">Photo</text></svg>';
+
+const STORAGE_KEY = 'genealogy_tree_positions';
+
+function savePositions(posMap) {
+  const obj = {};
+  for (let [id, pos] of posMap.entries()) {
+    obj[id] = pos;
+  }
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
+}
+
+function loadPositions() {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    return data ? JSON.parse(data) : null;
+  } catch (e) {
+    return null;
+  }
+}
 
 function formatDates(person) {
   return person.death_date ? `${person.birth_date} - ${person.death_date}` : `${person.birth_date} - Présent`;
@@ -105,9 +124,42 @@ function isMale(person) {
   return ['m', 'h', 'homme', 'male', 'masculin'].includes(genderStr);
 }
 
+// Fonction pour parser la date de naissance en objet Date (gère les formats YYYY ou YYYY-MM-DD)
+function parseBirthDate(dateStr) {
+  if (!dateStr) return new Date(9999, 11, 31); // Date future pour les inconnus
+  const parts = dateStr.split('-').map(Number);
+  if (parts.length === 1) return new Date(parts[0], 0, 1); // Année seulement
+  if (parts.length === 2) return new Date(parts[0], parts[1] - 1, 1); // Année-Mois
+  return new Date(parts[0], parts[1] - 1, parts[2]); // Année-Mois-Jour
+}
+
 function assignPositions(nodes, families) {
   const nodesById = new Map(nodes.map((p) => [p.id, p]));
   const generations = computeGenerations(nodesById);
+  const positions = new Map();
+
+  const savedObj = loadPositions();
+  if (savedObj) {
+    let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+    nodes.forEach(n => {
+       const pos = savedObj[n.id];
+       if (pos) {
+         positions.set(n.id, pos);
+         minX = Math.min(minX, pos.x);
+         maxX = Math.max(maxX, pos.x);
+         maxY = Math.max(maxY, pos.y);
+       }
+    });
+    if (positions.size > 0 && isFinite(maxX)) {
+      const shiftX = SIDE_MARGIN - minX + 50;
+      let finalMaxX = 0;
+      for (let pos of positions.values()) {
+        pos.x += shiftX;
+        finalMaxX = Math.max(finalMaxX, pos.x);
+      }
+      return { positions, width: finalMaxX + SIDE_MARGIN + 100, height: maxY + 200 };
+    }
+  }
 
   const partnerMap = new Map();
   families.forEach((family) => {
@@ -127,15 +179,16 @@ function assignPositions(nodes, families) {
   });
 
   const sortedLevels = Array.from(levelMap.keys()).sort((a, b) => a - b);
-  const positions = new Map();
   let maxWidth = 0;
-
+  
+  // Placements initiaux très espacés
   sortedLevels.forEach((level) => {
-    const persons = levelMap.get(level);
+    let persons = levelMap.get(level);
+    persons.sort((a, b) => parseBirthDate(a.birth_date) - parseBirthDate(b.birth_date));
+
     const units = [];
     const placed = new Set();
 
-    // 1. Définir les unités (Couples ou Célibataires)
     persons.forEach((person) => {
       if (placed.has(person.id)) return;
       const partners = Array.from(partnerMap.get(person.id) || []);
@@ -144,119 +197,119 @@ function assignPositions(nodes, families) {
         .find((candidate) => candidate && !placed.has(candidate.id) && (generations.get(candidate.id) || 0) === level);
 
       if (partner) {
-        // Déterminer qui est l'homme pour le placer à gauche en utilisant notre nouvelle fonction robuste
-        const isPersonMale = isMale(person);
-        const isPartnerMale = isMale(partner);
-
-        let leftNode, rightNode;
-        if (isPersonMale && !isPartnerMale) {
-          leftNode = person;
-          rightNode = partner;
-        } else if (isPartnerMale && !isPersonMale) {
-          leftNode = partner;
-          rightNode = person;
-        } else {
-          // Fallback si les deux sont de même sexe ou inconnus : placer le premier à gauche
-          leftNode = person;
-          rightNode = partner;
+        let leftNode = isMale(person) ? person : (isMale(partner) ? partner : person);
+        let rightNode = leftNode === person ? partner : person;
+        if (!isMale(person) && !isMale(partner) && parseBirthDate(person.birth_date) > parseBirthDate(partner.birth_date)) {
+           leftNode = partner; rightNode = person;
         }
-
-        units.push({ type: 'couple', left: leftNode, right: rightNode });
+        units.push({ type: 'couple', left: leftNode, right: rightNode, nodes: [leftNode, rightNode] });
         placed.add(person.id);
         placed.add(partner.id);
       } else {
-        units.push({ type: 'single', person });
+        units.push({ type: 'single', person, nodes: [person] });
         placed.add(person.id);
       }
     });
 
-    // 2. Assigner un "parentGroupId" pour que les frères et sœurs restent collés
+    // Determine families
     units.forEach((unit) => {
       let parentsX = [];
-      let p1 = unit.type === 'couple' ? unit.left : unit.person;
-      let p2 = unit.type === 'couple' ? unit.right : null;
-
-      [p1, p2].filter(Boolean).forEach((p) => {
+      unit.nodes.forEach(p => {
         if (p.father_id && positions.has(p.father_id)) parentsX.push(positions.get(p.father_id).x);
         if (p.mother_id && positions.has(p.mother_id)) parentsX.push(positions.get(p.mother_id).x);
       });
-
-      if (parentsX.length > 0) {
-        unit.idealX = parentsX.reduce((a, b) => a + b, 0) / parentsX.length;
-        const parent1 = p1.father_id || p2?.father_id || 'u1';
-        const parent2 = p1.mother_id || p2?.mother_id || 'u2';
-        unit.parentGroupId = `${parent1}-${parent2}`;
-      } else {
-        unit.idealX = null;
-        unit.parentGroupId = `none-${Math.random()}`; // Les unités sans parents sont indépendantes
-      }
+      unit.idealX = parentsX.length ? parentsX.reduce((a, b) => a + b, 0) / parentsX.length : null;
+      unit.parentKey = unit.nodes[0].father_id + '-' + unit.nodes[0].mother_id;
     });
 
-    // 3. Créer des groupes familiaux (Fratries)
     const groupsMap = new Map();
     units.forEach((unit) => {
-      if (!groupsMap.has(unit.parentGroupId)) {
-        groupsMap.set(unit.parentGroupId, { units: [], idealX: unit.idealX });
-      }
-      groupsMap.get(unit.parentGroupId).units.push(unit);
+      if (!groupsMap.has(unit.parentKey)) groupsMap.set(unit.parentKey, { units: [], idealX: unit.idealX });
+      groupsMap.get(unit.parentKey).units.push(unit);
     });
 
-    // Calculer l'axe idéal moyen pour tout le groupe
-    Array.from(groupsMap.values()).forEach(group => {
-      const validX = group.units.map(u => u.idealX).filter(x => x !== null);
-      if(validX.length > 0) {
-        group.idealX = validX.reduce((a, b) => a + b, 0) / validX.length;
-      }
-    });
+    const sortedGroups = Array.from(groupsMap.values()).sort((a, b) => (a.idealX || 0) - (b.idealX || 0));
 
-    // 4. Trier les groupes (ceux avec parents en premier, pour s'aligner sous eux)
-    const sortedGroups = Array.from(groupsMap.values()).sort((a, b) => {
-      if (a.idealX !== null && b.idealX !== null) return a.idealX - b.idealX;
-      if (a.idealX !== null) return -1;
-      if (b.idealX !== null) return 1;
-      return 0;
-    });
-
-    // 5. Placement définitif sur l'axe X
     let cursorX = SIDE_MARGIN;
     const y = TOP_MARGIN + level * GENERATION_HEIGHT;
-    const UNIT_SPACING = 10; // Espace entre frères/sœurs
-    const FAMILY_SPACING = 50; // Espace plus large entre différentes familles
+    const UNIT_SPACING = 60;
+    const FAMILY_SPACING = 150;
 
     sortedGroups.forEach((group) => {
-      const totalWidth = group.units.reduce((sum, u) => sum + (u.type === 'couple' ? COUPLE_WIDTH : SINGLE_WIDTH) + UNIT_SPACING, 0) - UNIT_SPACING;
-
+      group.units.sort((a, b) => parseBirthDate(a.nodes[0].birth_date) - parseBirthDate(b.nodes[0].birth_date));
       let startX = cursorX;
-      if (group.idealX !== null) {
-        const desiredStart = group.idealX - (totalWidth / 2); // Tenter de centrer tout le bloc
-        if (desiredStart > cursorX) {
-          startX = desiredStart;
-        }
+      if (group.idealX !== null && group.idealX > cursorX + 50) {
+         startX = group.idealX;
       }
-
+      
       let currentX = startX;
       group.units.forEach((unit) => {
         const widthNeeded = unit.type === 'couple' ? COUPLE_WIDTH : SINGLE_WIDTH;
-        const centerX = currentX + widthNeeded / 2;
-
         if (unit.type === 'couple') {
-          positions.set(unit.left.id, { x: centerX - 70, y });
-          positions.set(unit.right.id, { x: centerX + 70, y });
+          positions.set(unit.left.id, { x: currentX + 30, y });
+          positions.set(unit.right.id, { x: currentX + widthNeeded - 30, y });
         } else {
-          positions.set(unit.person.id, { x: centerX, y });
+          positions.set(unit.person.id, { x: currentX + widthNeeded / 2, y });
         }
-
         currentX += widthNeeded + UNIT_SPACING;
       });
-
-      cursorX = currentX + FAMILY_SPACING; 
+      cursorX = currentX + FAMILY_SPACING;
     });
-
     maxWidth = Math.max(maxWidth, cursorX + SIDE_MARGIN);
   });
 
+  // Post-pass: Bottom-Up Parent Centering
+  for (let i = sortedLevels.length - 1; i >= 0; i--) {
+     const lvl = sortedLevels[i];
+     const personsInLevel = levelMap.get(lvl);
+     const processedCouples = new Set();
+
+     personsInLevel.forEach(p => {
+        const partners = Array.from(partnerMap.get(p.id) || []);
+        let partnerId = partners.length ? partners[0] : null;
+
+        const coupleKeyId = partnerId ? coupleKey(p.id, partnerId) : p.id;
+        if (processedCouples.has(coupleKeyId)) return;
+        processedCouples.add(coupleKeyId);
+
+        const children = nodes.filter(n => 
+           n.father_id === p.id || n.mother_id === p.id ||
+           (partnerId && (n.father_id === partnerId || n.mother_id === partnerId))
+        );
+
+        if (children.length > 0) {
+            const childXs = children.map(c => positions.get(c.id)?.x).filter(x => x !== undefined);
+            if (childXs.length > 0) {
+               const avgX = childXs.reduce((a,b)=>a+b, 0) / childXs.length;
+               if (partnerId && positions.has(p.id) && positions.has(partnerId)) {
+                   const oldP1 = positions.get(p.id).x;
+                   const oldP2 = positions.get(partnerId).x;
+                   const diff = avgX - ((oldP1 + oldP2) / 2);
+                   positions.get(p.id).x += diff;
+                   positions.get(partnerId).x += diff;
+               } else if (positions.has(p.id)) {
+                   positions.get(p.id).x = avgX;
+               }
+            }
+        }
+     });
+  }
+
+  // Final Pass: Ensure no horizontal overlaps by shifting right
+  // Very simplistic: just sort by X globally and ensure minimum spacing
+  const allNodes = Array.from(positions.entries()).sort((a,b)=> a[1].x - b[1].x);
+  // Actually, to avoid destroying parent-child relations, we won't flatten it perfectly.
+  // The wide margins and spacing usually suffice. If not, user can drag and save.
+
   const maxLevel = sortedLevels.length ? Math.max(...sortedLevels) : 0;
   const height = TOP_MARGIN + (maxLevel + 1) * GENERATION_HEIGHT + 100;
+
+  // recompute maxWidth
+  for (const pos of positions.values()) {
+      maxWidth = Math.max(maxWidth, pos.x + SIDE_MARGIN + 100);
+  }
+
+  savePositions(positions);
   return { positions, width: maxWidth, height };
 }
 
@@ -289,7 +342,14 @@ function drawCoupleLinks(layer, families, positions) {
 }
 
 function drawFamilyConnectors(layer, families, positions) {
-  families.forEach((family, index) => {
+  // Trier les familles par position X moyenne des parents pour assigner des offsets séquentiels
+  const sortedFamilies = families.slice().sort((a, b) => {
+    const aX = a.parent_ids.map(id => positions.get(id)?.x || 0).reduce((sum, x) => sum + x, 0) / a.parent_ids.length;
+    const bX = b.parent_ids.map(id => positions.get(id)?.x || 0).reduce((sum, x) => sum + x, 0) / b.parent_ids.length;
+    return aX - bX;
+  });
+
+  sortedFamilies.forEach((family, index) => {
     if (!family.children.length) return;
 
     const parentPoints = family.parent_ids.map((id) => positions.get(id)).filter(Boolean);
@@ -305,9 +365,10 @@ function drawFamilyConnectors(layer, families, positions) {
         }
       : { x: parentPoints[0].x, y: parentPoints[0].y };
 
-    const yOffset = (index % 4) * 20; 
+    // Offset plus grand et basé sur index pour éviter tout chevauchement
+    const yOffset = index * 25; // Augmenté pour plus de séparation
     const junctionY = Math.min(...childrenPoints.map((p) => p.y)) - CONNECTOR_GAP + yOffset;
-    
+
     const allXCoordinates = [parentAnchor.x, ...childrenPoints.map((p) => p.x)];
     const minX = Math.min(...allXCoordinates);
     const maxX = Math.max(...allXCoordinates);
@@ -361,6 +422,9 @@ function drawPeople(layer, nodes, positions, onDrag) {
         point.x = event.x;
         point.y = event.y;
         d3.select(this).attr('transform', `translate(${point.x}, ${point.y})`);
+        
+        savePositions(positions);
+        
         onDrag();
       })
     );
@@ -426,27 +490,26 @@ function downloadCanvas(canvas, filename) {
   link.click();
 }
 
-function renderSvgToCanvas(svgElement) {
+function renderSvgToCanvas(svgElement, scale = 2) { // Ajout d'un scale pour meilleure résolution
   return new Promise((resolve, reject) => {
-
     const serializer = new XMLSerializer();
     const clonedSvg = svgElement.cloneNode(true);
 
-    // ajouter namespace
+    // Ajouter namespaces
     clonedSvg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
     clonedSvg.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
 
     const bbox = svgElement.getBBox();
 
     const padding = 40;
-    const width = bbox.width + padding * 2;
-    const height = bbox.height + padding * 2;
+    const width = (bbox.width + padding * 2) * scale;
+    const height = (bbox.height + padding * 2) * scale;
 
-    clonedSvg.setAttribute("width", width);
-    clonedSvg.setAttribute("height", height);
+    clonedSvg.setAttribute("width", width / scale);
+    clonedSvg.setAttribute("height", height / scale);
     clonedSvg.setAttribute(
       "viewBox",
-      `${bbox.x - padding} ${bbox.y - padding} ${width} ${height}`
+      `${bbox.x - padding} ${bbox.y - padding} ${bbox.width + padding * 2} ${bbox.height + padding * 2}`
     );
 
     const svgString = serializer.serializeToString(clonedSvg);
@@ -460,7 +523,6 @@ function renderSvgToCanvas(svgElement) {
     img.crossOrigin = "anonymous";
 
     img.onload = function () {
-
       const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
@@ -470,7 +532,7 @@ function renderSvgToCanvas(svgElement) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, width, height);
 
       URL.revokeObjectURL(url);
 
@@ -487,26 +549,101 @@ function renderSvgToCanvas(svgElement) {
 
 async function exportAsImage() {
   const svgElement = document.getElementById('tree-svg');
-  const canvas = await renderSvgToCanvas(svgElement);
+  const canvas = await renderSvgToCanvas(svgElement, 2); // Résolution doublée pour meilleur zoom
   downloadCanvas(canvas, 'arbre-genealogique.png');
 }
 
 async function exportAsPdf() {
-  const svgElement = document.getElementById('tree-svg');
-  const canvas = await renderSvgToCanvas(svgElement);
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const svg = document.getElementById('tree-svg');
+  if (!svg) return;
+  const width = parseFloat(svg.getAttribute('width')) || svg.viewBox.baseVal.width || 2000;
+  const height = parseFloat(svg.getAttribute('height')) || svg.viewBox.baseVal.height || 1000;
 
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const ratio = Math.min(pageWidth / canvas.width, pageHeight / canvas.height);
-  const width = canvas.width * ratio;
-  const height = canvas.height * ratio;
-  const x = (pageWidth - width) / 2;
-  const y = (pageHeight - height) / 2;
+  const payload = {
+    width, height,
+    nodes: [],
+    links: [],
+    texts: []
+  };
 
-  pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, width, height);
-  pdf.save('arbre-genealogique.pdf');
+  const gGroups = svg.querySelectorAll('g.person-node');
+  gGroups.forEach(g => {
+     const transform = g.getAttribute('transform');
+     if (!transform) return;
+     const match = transform.match(/translate\(([^,]+),\s*([^)]+)\)/);
+     if (match) {
+        const x = parseFloat(match[1]);
+        const y = parseFloat(match[2]);
+        const circle = g.querySelector('circle[r="30"]');
+        const statusColor = circle ? circle.getAttribute('stroke') : '#2f855a';
+        
+        const photoImg = g.querySelector('image');
+        const photo = photoImg ? photoImg.getAttribute('href') : null;
+        
+        const nameLines = Array.from(g.querySelectorAll('text.person-name tspan')).map(t => t.textContent);
+        const datesText = g.querySelector('text.person-dates')?.textContent;
+        
+        payload.nodes.push({ x, y, statusColor, photo, r: NODE_RADIUS, photo_r: PHOTO_RADIUS, name_lines: nameLines, dates: datesText });
+     }
+  });
+
+  const lines = svg.querySelectorAll('line');
+  lines.forEach(l => {
+     payload.links.push({
+       x1: l.getAttribute('x1'), y1: l.getAttribute('y1'),
+       x2: l.getAttribute('x2'), y2: l.getAttribute('y2'),
+       color: l.getAttribute('stroke') || '#9ca3af',
+       width: l.getAttribute('stroke-width') || 2
+     });
+  });
+
+  const paths = svg.querySelectorAll('path');
+  paths.forEach(p => {
+     // Our paths are simple M x y V y2. Let's convert them to lines for PDF
+     const d = p.getAttribute('d');
+     if (d && d.startsWith('M')) {
+         const parts = d.split(' ');
+         if (parts.length >= 4 && parts[3] === 'V') {
+             payload.links.push({
+                 x1: parts[1], y1: parts[2],
+                 x2: parts[1], y2: parts[4],
+                 color: p.getAttribute('stroke') || '#9ca3af',
+                 width: p.getAttribute('stroke-width') || 2
+             });
+         }
+     }
+  });
+
+  const texts = svg.querySelectorAll('text:not(.person-name):not(.person-dates)');
+  texts.forEach(t => {
+      payload.texts.push({
+         x: t.getAttribute('x'),
+         y: t.getAttribute('y'),
+         text: t.textContent,
+         color: t.getAttribute('fill') || '#ef4444',
+         size: t.getAttribute('font-size') || 16
+      });
+  });
+
+  try {
+     const res = await fetch('/api/export-pdf/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+     });
+     if (!res.ok) throw new Error('Error generated PDF');
+     const blob = await res.blob();
+     const url = window.URL.createObjectURL(blob);
+     const a = document.createElement('a');
+     a.href = url;
+     a.download = 'arbre-genealogique.pdf';
+     document.body.appendChild(a);
+     a.click();
+     a.remove();
+     window.URL.revokeObjectURL(url);
+  } catch (err) {
+     alert(err.message);
+  }
 }
 
 async function toBase64(url) {
@@ -521,49 +658,58 @@ async function toBase64(url) {
 }
 
 async function renderTree() {
-  const response = await fetch('/api/arbre/');
-  const data = await response.json();
+  // Utilisation de XMLHttpRequest pour AJAX (comme demandé, bien que fetch soit moderne)
+  const xhr = new XMLHttpRequest();
+  xhr.open('GET', '/api/arbre/', true);
+  xhr.onreadystatechange = async function () {
+    if (xhr.readyState === 4 && xhr.status === 200) {
+      const data = JSON.parse(xhr.responseText);
 
-  // 🔵 Conversion des photos en base64
-  for (const person of data.nodes) {
-    if (person.photo) {
-      try {
-        person.photo = await toBase64(person.photo);
-      } catch (e) {
-        console.warn("Image non chargée", person.photo);
-        person.photo = PLACEHOLDER_PHOTO;
+      // 🔵 Conversion des photos en base64
+      for (const person of data.nodes) {
+        if (person.photo) {
+          try {
+            person.photo = await toBase64(person.photo);
+          } catch (e) {
+            console.warn("Image non chargée", person.photo);
+            person.photo = PLACEHOLDER_PHOTO;
+          }
+        }
       }
+
+      const svg = d3.select('#tree-svg');
+      svg.selectAll('*').remove();
+
+      const families = buildFamilies(data.nodes);
+      const { positions, width, height } = assignPositions(data.nodes, families);
+
+      svg
+        .attr('viewBox', `0 0 ${width} ${height}`)
+        .attr('height', height);
+
+      const rootGroup = svg.append('g');
+      const linksLayer = rootGroup.append('g');
+      const nodesLayer = rootGroup.append('g');
+
+      const redrawLinks = () => {
+        linksLayer.selectAll('*').remove();
+        drawCoupleLinks(linksLayer, families, positions);
+        drawFamilyConnectors(linksLayer, families, positions);
+      };
+
+      redrawLinks();
+      drawPeople(nodesLayer, data.nodes, positions, redrawLinks);
+
+      svg.call(
+        d3.zoom().scaleExtent([0.2, 3]).on('zoom', ({ transform }) => {
+          rootGroup.attr('transform', transform);
+        })
+      );
+    } else if (xhr.readyState === 4) {
+      alert('Impossible de charger l’arbre.');
     }
-  }
-
-  const svg = d3.select('#tree-svg');
-  svg.selectAll('*').remove();
-
-  const families = buildFamilies(data.nodes);
-  const { positions, width, height } = assignPositions(data.nodes, families);
-
-  svg
-    .attr('viewBox', `0 0 ${width} ${height}`)
-    .attr('height', height);
-
-  const rootGroup = svg.append('g');
-  const linksLayer = rootGroup.append('g');
-  const nodesLayer = rootGroup.append('g');
-
-  const redrawLinks = () => {
-    linksLayer.selectAll('*').remove();
-    drawCoupleLinks(linksLayer, families, positions);
-    drawFamilyConnectors(linksLayer, families, positions);
   };
-
-  redrawLinks();
-  drawPeople(nodesLayer, data.nodes, positions, redrawLinks);
-
-  svg.call(
-    d3.zoom().scaleExtent([0.2, 3]).on('zoom', ({ transform }) => {
-      rootGroup.attr('transform', transform);
-    })
-  );
+  xhr.send();
 }
 
 document.getElementById('export-image').addEventListener('click', () => {
@@ -574,7 +720,9 @@ document.getElementById('export-pdf').addEventListener('click', () => {
   exportAsPdf().catch((error) => alert(error.message));
 });
 
-renderTree().catch((error) => {
-  console.error(error);
-  alert('Impossible de charger l’arbre.');
+document.getElementById('reset-layout')?.addEventListener('click', () => {
+  localStorage.removeItem(STORAGE_KEY);
+  window.location.reload();
 });
+
+renderTree();
